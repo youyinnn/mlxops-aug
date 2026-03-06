@@ -35,8 +35,8 @@ class AugmentBase:
             self.num_classes, 1).permute(1, 0)
         return (oh_a * ll) + (oh_b * (1 - ll))
 
-    def setup(self, setup_func: Callable):
-        setup_func(self)
+    def setup(self, setup_args):
+        print(f"No setup implementation for: {type(self).__qualname__}")
 
     def get_x_y(self, aug_result) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError()
