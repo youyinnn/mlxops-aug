@@ -486,3 +486,8 @@ class PuzzleMix(AugmentBase):
     def get_loss(self, output, aug_result, loss_fn):
         _x, (lam, _y) = aug_result
         return loss_fn(output, _y)
+
+    def setup(self, setup_args: dict):
+        training_model = setup_args.get('training_model')
+        if training_model is not None:
+            self.saliency_model = training_model

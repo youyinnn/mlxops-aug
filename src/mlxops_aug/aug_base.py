@@ -1,11 +1,10 @@
-from typing import Callable
-
 import torch
 import random
 import time
 from torchvision.transforms import v2
 from dataclasses import dataclass
 import numpy as np
+from torch.utils.data import Dataset
 
 
 @dataclass(kw_only=True)
@@ -35,7 +34,10 @@ class AugmentBase:
             self.num_classes, 1).permute(1, 0)
         return (oh_a * ll) + (oh_b * (1 - ll))
 
-    def setup(self, setup_args):
+    def setup_based_on_datasets(self, train: Dataset, test: Dataset):
+        pass
+
+    def setup(self, setup_args: dict):
         print(f"No setup implementation for: {type(self).__qualname__}")
 
     def get_x_y(self, aug_result) -> tuple[torch.Tensor, torch.Tensor]:
