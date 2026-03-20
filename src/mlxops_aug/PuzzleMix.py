@@ -13,6 +13,64 @@ from mlxops_utils.plotting_utils import plot_hor
 from mlxops_xai import gradient
 # autopep8: on
 
+# Implementation Credit: https://github.com/Westlake-AI/openmixup/blob/main/openmixup/models/augments/puzzlemix.py
+
+
+@dataclass(kw_only=True)
+class PuzzleMix(AugmentBase):
+
+    def __post_init__(self):
+        self.saliency_conf = {
+            "method": "vanilla_gradient", "method_kwargs": {}}
+        if self.config.get("saliency_conf") is not None:
+            for k, v in self.config.get("saliency_conf").items():
+                self.saliency_conf[k] = v
+
+    def aug(self, _x, _y, model):
+        sa_func = getattr(gradient, self.saliency_conf["method"])
+        sa_func_kwargs = self.saliency_conf["method_kwargs"]
+        sa = sa_func(model, _x, _y, **sa_func_kwargs)
+        # sa = guided_absolute_grad(model, _x, _y, num_samples=30, th=0.8)
+        if self.config.get("debug", False):
+            plot_hor([ssa for ssa in sa.cpu()])
+
+        return puzzlemix(
+            _x,
+            _y,
+            self.num_classes,
+            features=sa,
+            **self.config,
+        )
+
+    def __call__(self, _x, _y) -> AugResult:
+        lam = 1
+        if torch.rand(1) <= self.config.get("prob", 1.0):
+            if len(_y.shape) > 1:
+                no_saliency_aug_idx = torch.where(_y >= 1)[0]
+                if no_saliency_aug_idx.shape[0] > 1:
+                    _tmp_label_y = _y[no_saliency_aug_idx].argmax(1)
+                    _tmp_x = _x[no_saliency_aug_idx]
+
+                    aug_only_by_puzzlemix_x, (ya, yb, lam) = self.aug(
+                        _tmp_x, _tmp_label_y, self.saliency_model
+                    )
+                    aug_only_by_puzzlemix_y = self.get_mixed_y_from_ablam(
+                        ya, yb, lam)
+                    _x[no_saliency_aug_idx] = aug_only_by_puzzlemix_x
+                    _y[no_saliency_aug_idx] = aug_only_by_puzzlemix_y
+            else:
+                _x, (ya, yb, lam) = self.aug(_x, _y, self.saliency_model)
+                _y = self.get_mixed_y_from_ablam(ya, yb, lam)
+
+        return AugResult(
+            augmented_x=_x,
+            augmented_y=_y,
+            lam=lam
+        )
+
+    def setup_based_on_model(self, setup_args: dict):
+        self.saliency_model = setup_args.get('training_model')
+
 
 def cost_matrix(width, device):
     """transport cost"""
@@ -429,65 +487,3 @@ def puzzlemix(
     img = mask * input1 + (1 - mask) * input2
 
     return img, (y_a, y_b, lam)
-
-
-@dataclass(kw_only=True)
-class PuzzleMix(AugmentBase):
-
-    def __post_init__(self):
-        self.saliency_conf = {
-            "method": "vanilla_gradient", "method_kwargs": {}}
-        if self.config.get("saliency_conf") is not None:
-            for k, v in self.config.get("saliency_conf").items():
-                self.saliency_conf[k] = v
-
-    def aug(self, _x, _y, model):
-        sa_func = getattr(gradient, self.saliency_conf["method"])
-        sa_func_kwargs = self.saliency_conf["method_kwargs"]
-        sa = sa_func(model, _x, _y, **sa_func_kwargs)
-        # sa = guided_absolute_grad(model, _x, _y, num_samples=30, th=0.8)
-        if self.config.get("debug", False):
-            plot_hor([ssa for ssa in sa.cpu()])
-
-        return puzzlemix(
-            _x,
-            _y,
-            self.num_classes,
-            features=sa,
-            **self.config,
-        )
-
-    def __call__(self, _x, _y) -> tuple[torch.Tensor]:
-        lam = 1
-        if torch.rand(1) <= self.config.get("prob", 1.0):
-            if len(_y.shape) > 1:
-                no_saliency_aug_idx = torch.where(_y >= 1)[0]
-                if no_saliency_aug_idx.shape[0] > 1:
-                    _tmp_label_y = _y[no_saliency_aug_idx].argmax(1)
-                    _tmp_x = _x[no_saliency_aug_idx]
-
-                    aug_only_by_puzzlemix_x, (ya, yb, lam) = self.aug(
-                        _tmp_x, _tmp_label_y, self.saliency_model
-                    )
-                    aug_only_by_puzzlemix_y = self.get_mixed_y_from_ablam(
-                        ya, yb, lam)
-                    _x[no_saliency_aug_idx] = aug_only_by_puzzlemix_x
-                    _y[no_saliency_aug_idx] = aug_only_by_puzzlemix_y
-            else:
-                _x, (ya, yb, lam) = self.aug(_x, _y, self.saliency_model)
-                _y = self.get_mixed_y_from_ablam(ya, yb, lam)
-
-        return _x, (lam, _y)
-
-    def get_x_y(self, aug_result):
-        _x, (lam, _y) = aug_result
-        return _x, _y
-
-    def get_loss(self, output, aug_result, loss_fn):
-        _x, (lam, _y) = aug_result
-        return loss_fn(output, _y)
-
-    def setup(self, setup_args: dict):
-        training_model = setup_args.get('training_model')
-        if training_model is not None:
-            self.saliency_model = training_model

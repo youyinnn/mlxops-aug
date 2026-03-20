@@ -1,5 +1,7 @@
 from .aug_base import *
 
+# Implementation Credit: Pytorch
+
 
 @dataclass(kw_only=True)
 class CutMixUp(AugmentBase):
@@ -13,7 +15,7 @@ class CutMixUp(AugmentBase):
 
         if self.config["use_cutmix"]:
             cutmix_or_mixup.append(
-                v2.CutMix(
+                v2.CutjMix(
                     num_classes=self.num_classes,
                     alpha=self.config["alpha"],
                 )
@@ -28,7 +30,7 @@ class CutMixUp(AugmentBase):
 
         self.cutmix_or_mixup_aug = v2.RandomChoice(cutmix_or_mixup)
 
-    def __call__(self, _x, _y) -> tuple[torch.Tensor]:
+    def __call__(self, _x, _y) -> AugResult:
         r = torch.rand(1)
         prob = self.config["prob"]
         if r <= prob:
@@ -46,8 +48,7 @@ class CutMixUp(AugmentBase):
             else:
                 _x, _y = self.cutmix_or_mixup_aug(_x, _y)
 
-        return _x, _y
-
-    def get_x_y(self, aug_result):
-        _x, _y = aug_result
-        return _x, _y
+        return AugResult(
+            augmented_x=_x,
+            augmented_y=_y
+        )

@@ -2,9 +2,18 @@ import torch
 import random
 import time
 from torchvision.transforms import v2
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 from torch.utils.data import Dataset
+
+
+@dataclass(kw_only=True)
+class AugResult:
+
+    augmented_x: torch.Tensor
+    augmented_y: torch.Tensor
+    lam: float = None
+    sideproduct: dict = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)
@@ -35,19 +44,20 @@ class AugmentBase:
         return (oh_a * ll) + (oh_b * (1 - ll))
 
     def setup_based_on_datasets(self, train: Dataset, test: Dataset):
-        pass
+        print(
+            f"No setup_based_on_datasets implementation for: {type(self).__qualname__}")
 
-    def setup(self, setup_args: dict):
-        print(f"No setup implementation for: {type(self).__qualname__}")
+    def setup_based_on_model(self, setup_args: dict):
+        print(
+            f"No setup_based_on_model implementation for: {type(self).__qualname__}")
 
-    def get_x_y(self, aug_result) -> tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError()
+    def get_x_y(self, aug_result: AugResult) -> tuple[torch.Tensor, torch.Tensor]:
+        return aug_result.augmented_x, aug_result.augmented_y
 
-    def get_loss(self, output, aug_result, loss_fn):
-        _x, _y = aug_result
-        return loss_fn(output, _y)
+    def get_loss(self, output, aug_result: AugResult, loss_fn):
+        return loss_fn(output, aug_result.augmented_y)
 
-    def __call__(self, x, y):
+    def __call__(self, x, y) -> AugResult:
         raise NotImplementedError()
 
 
