@@ -1,7 +1,9 @@
+from collections import Counter
 from dataclasses import dataclass
 
 import torch
 import numpy as np
+from tqdm import tqdm
 from .aug_base import *
 
 # Implementation Credit: https://github.com/ntucllab/imbalanced-DL/blob/main/imbalanceddl/strategy/_remix_drw.py
@@ -51,14 +53,15 @@ class ReMix(AugmentBase):
         )
 
     def setup_based_on_datasets(self, train, test):
-        all_y = [train[i][1] for i in range(len(train))]
-        label_count = {}
-        for label in all_y:
-            if label_count.get(label) is None:
-                label_count[label] = 0
-            label_count[label] += 1
-        self.cls_num_list = [label_count[i]
-                             for i in range(self.num_classes)]
+        loader = torch.utils.data.DataLoader(
+            train, batch_size=256, num_workers=12,
+            collate_fn=lambda batch: [s[1] for s in batch]
+        )
+        all_y = [label for batch in tqdm(
+            loader, desc="ReMix: scanning labels") for label in batch]
+        label_count = Counter(int(y) for y in all_y)
+        print(f"Label count: {label_count}")
+        self.cls_num_list = [label_count[i] for i in range(self.num_classes)]
 
     def get_loss(self, output, aug_result: AugResult, loss_fn):
         if aug_result.sideproduct.get('y_b') is None:
