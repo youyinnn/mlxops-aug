@@ -24,6 +24,7 @@ class SaliencyMix(AugmentBase):
         self.lam = self.config.get("lam", None)
 
     def __call__(self, _x, _y) -> AugResult:
+        lam = self.lam
         if torch.rand(1) <= self.config.get("prob", 1.0):
             _x, (ya, yb, lam) = saliencymix(_x, _y, **self.config)
             _y = self.get_mixed_y_from_ablam(ya, yb, lam)
