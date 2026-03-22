@@ -15,23 +15,8 @@ class ResizeMix(AugmentBase):
     def __call__(self, _x, _y) -> AugResult:
         lam = 1
         if torch.rand(1) <= self.config.get("prob", 1.0):
-            if len(_y.shape) > 1:
-                no_saliency_aug_idx = torch.where(_y >= 1)[0]
-                if no_saliency_aug_idx.shape[0] > 1:
-                    _tmp_x = _x[no_saliency_aug_idx]
-                    _tmp_y = _y[no_saliency_aug_idx]
-
-                    aug_only_by_resizemix_x, (ya, yb, lam) = resizemix(
-                        _tmp_x, _tmp_y, **self.config
-                    )
-
-                    aug_only_by_resizemix_y = self.get_mixed_y_from_ablam(
-                        ya, yb, lam)
-                    _x[no_saliency_aug_idx] = aug_only_by_resizemix_x
-                    _y[no_saliency_aug_idx] = aug_only_by_resizemix_y
-            else:
-                _x, (ya, yb, lam) = resizemix(_x, _y, **self.config)
-                _y = self.get_mixed_y_from_ablam(ya, yb, lam)
+            _x, (ya, yb, lam) = resizemix(_x, _y, **self.config)
+            _y = self.get_mixed_y_from_ablam(ya, yb, lam)
 
         return AugResult(
             augmented_x=_x,

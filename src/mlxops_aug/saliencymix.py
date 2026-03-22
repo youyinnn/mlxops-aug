@@ -21,7 +21,7 @@ class SaliencyMix(AugmentBase):
             )
         self.prob = self.config.get("prob", 0.5)
         self.alpha = self.config.get("alpha", 1.0)
-        self.lam = self.config.get("lam", None)
+        self.lam = self.config.get("lam", 1.0)
 
     def __call__(self, _x, _y) -> AugResult:
         lam = self.lam

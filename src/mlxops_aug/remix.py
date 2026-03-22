@@ -21,25 +21,10 @@ class ReMix(AugmentBase):
             if self.cls_num_list is None:
                 raise RuntimeError(
                     f"The self.cls_num_list of {type(self).__qualname__} is not defined.")
-            if len(_y.shape) > 1:
-                no_saliency_aug_idx = torch.where(_y >= 1)[0]
-                if no_saliency_aug_idx.shape[0] > 1:
-                    _tmp_x = _x[no_saliency_aug_idx]
-                    _tmp_y = _y[no_saliency_aug_idx]
-
-                    aug_only_by_resizemix_x, (y_a, y_b, lam_x, lam_y) = remix_data(
-                        _tmp_x, _tmp_y, self.cls_num_list, **self.config
-                    )
-
-                    aug_only_by_resizemix_y = self.get_mixed_y_from_ablam(
-                        y_a, y_b, lam_y)
-                    _x[no_saliency_aug_idx] = aug_only_by_resizemix_x
-                    _y[no_saliency_aug_idx] = aug_only_by_resizemix_y
-            else:
-                _x, (y_a, y_b, lam_x, lam_y) = remix_data(
-                    _x, _y, self.cls_num_list, **self.config
-                )
-                _y = self.get_mixed_y_from_ablam(y_a, y_b, lam_y)
+            _x, (y_a, y_b, lam_x, lam_y) = remix_data(
+                _x, _y, self.cls_num_list, **self.config
+            )
+            _y = self.get_mixed_y_from_ablam(y_a, y_b, lam_y)
 
         return AugResult(
             augmented_x=_x,

@@ -31,22 +31,10 @@ class CutMixUp(AugmentBase):
         self.cutmix_or_mixup_aug = v2.RandomChoice(cutmix_or_mixup)
 
     def __call__(self, _x, _y) -> AugResult:
-        r = torch.rand(1)
-        prob = self.config["prob"]
-        if r <= prob:
+        if torch.rand(1) <= self.config.get("prob", 1.0):
             if len(_y.shape) > 1:
-                no_saliency_aug_idx = torch.where(_y >= 1)[0]
-                if no_saliency_aug_idx.shape[0] > 1:
-                    aug_only_by_cutmixup_x, aug_only_by_cutmixup_y = (
-                        self.cutmix_or_mixup_aug(
-                            _x[no_saliency_aug_idx], _y[no_saliency_aug_idx].argmax(
-                                1)
-                        )
-                    )
-                    _x[no_saliency_aug_idx] = aug_only_by_cutmixup_x
-                    _y[no_saliency_aug_idx] = aug_only_by_cutmixup_y
-            else:
-                _x, _y = self.cutmix_or_mixup_aug(_x, _y)
+                _y = _y.argmax(1)
+            _x, _y = self.cutmix_or_mixup_aug(_x, _y)
 
         return AugResult(
             augmented_x=_x,

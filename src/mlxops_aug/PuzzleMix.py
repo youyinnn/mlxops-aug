@@ -45,22 +45,8 @@ class PuzzleMix(AugmentBase):
     def __call__(self, _x, _y) -> AugResult:
         lam = 1
         if torch.rand(1) <= self.config.get("prob", 1.0):
-            if len(_y.shape) > 1:
-                no_saliency_aug_idx = torch.where(_y >= 1)[0]
-                if no_saliency_aug_idx.shape[0] > 1:
-                    _tmp_label_y = _y[no_saliency_aug_idx].argmax(1)
-                    _tmp_x = _x[no_saliency_aug_idx]
-
-                    aug_only_by_puzzlemix_x, (ya, yb, lam) = self.aug(
-                        _tmp_x, _tmp_label_y, self.saliency_model
-                    )
-                    aug_only_by_puzzlemix_y = self.get_mixed_y_from_ablam(
-                        ya, yb, lam)
-                    _x[no_saliency_aug_idx] = aug_only_by_puzzlemix_x
-                    _y[no_saliency_aug_idx] = aug_only_by_puzzlemix_y
-            else:
-                _x, (ya, yb, lam) = self.aug(_x, _y, self.saliency_model)
-                _y = self.get_mixed_y_from_ablam(ya, yb, lam)
+            _x, (ya, yb, lam) = self.aug(_x, _y, self.saliency_model)
+            _y = self.get_mixed_y_from_ablam(ya, yb, lam)
 
         return AugResult(
             augmented_x=_x,
