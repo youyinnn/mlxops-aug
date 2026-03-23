@@ -9,6 +9,10 @@ from .aug_base import *
 # Implementation Credit: https://github.com/ntucllab/imbalanced-DL/blob/main/imbalanceddl/strategy/_remix_drw.py
 
 
+def _remix_collate_labels(batch):
+    return [s[1] for s in batch]
+
+
 @dataclass
 class ReMix(AugmentBase):
 
@@ -40,7 +44,7 @@ class ReMix(AugmentBase):
     def setup_based_on_datasets(self, train, test):
         loader = torch.utils.data.DataLoader(
             train, batch_size=256, num_workers=12,
-            collate_fn=lambda batch: [s[1] for s in batch]
+            collate_fn=_remix_collate_labels
         )
         all_y = [label for batch in tqdm(
             loader, desc="ReMix: scanning labels") for label in batch]

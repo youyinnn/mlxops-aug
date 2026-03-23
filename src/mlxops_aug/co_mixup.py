@@ -27,9 +27,8 @@ class CoMixup(AugmentBase):
             ("m_thres", 0.83),
             ("m_thres_type", "hard"),
             ("m_eta", 0.05),
+            ("m_omega", 0.001),
             ("mixup_alpha", 2.0),
-            ("m_omega", 0.001),
-            ("m_omega", 0.001),
             ("set_resolve", True),
             ("m_niter", 1),
             ("parallel", False),
@@ -75,18 +74,8 @@ class CoMixup(AugmentBase):
         A_dist = None
 
         # Calculate saliency (unary)
-        if args.clean_lam == 0:
-            model.eval()
-            output = model(input_var)
-            loss_batch = criterion_batch(output, target_var)
-        else:
-            model.train()
-            output = model(input_var)
-            loss_batch = 2 * args.clean_lam * criterion_batch(output,
-                                                              target_var) / args.num_classes
-        loss_batch_mean = torch.mean(loss_batch, dim=0)
-        loss_batch_mean.backward(retain_graph=True)
-        sc = torch.sqrt(torch.mean(input_var.grad**2, dim=1))
+        # Disable torch.compile to avoid CUDAGraph buffer conflicts during backward
+        sc = _compute_saliency(input_var, target_var, model, criterion_batch, args)
 
         batch_size = input.shape[0]
 
@@ -127,6 +116,21 @@ class CoMixup(AugmentBase):
                                                    A_dist=A_dist)
 
         return out, target_reweighted
+
+
+@torch.compiler.disable
+def _compute_saliency(input_var, target_var, model, criterion_batch, args):
+    if args.clean_lam == 0:
+        model.eval()
+        output = model(input_var)
+        loss_batch = criterion_batch(output, target_var)
+    else:
+        model.train()
+        output = model(input_var)
+        loss_batch = 2 * args.clean_lam * criterion_batch(output, target_var) / args.num_classes
+    loss_batch_mean = torch.mean(loss_batch, dim=0)
+    loss_batch_mean.backward(retain_graph=True)
+    return torch.sqrt(torch.mean(input_var.grad**2, dim=1))
 
 
 def to_one_hot(inp, num_classes, device='cuda'):

@@ -15,7 +15,7 @@ class CutMixUp(AugmentBase):
 
         if self.config["use_cutmix"]:
             cutmix_or_mixup.append(
-                v2.CutjMix(
+                v2.CutMix(
                     num_classes=self.num_classes,
                     alpha=self.config["alpha"],
                 )
