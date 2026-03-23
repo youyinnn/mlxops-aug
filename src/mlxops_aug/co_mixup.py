@@ -1,6 +1,10 @@
+import os
+
 import torch.nn as nn
 from torch.autograd import Variable
 from types import SimpleNamespace
+
+from tqdm import tqdm
 from .aug_base import *
 import torch.multiprocessing as mp
 from math import ceil
@@ -27,8 +31,8 @@ class CoMixup(AugmentBase):
             ("m_thres", 0.83),
             ("m_thres_type", "hard"),
             ("m_eta", 0.05),
-            ("m_omega", 0.001),
             ("mixup_alpha", 2.0),
+            ("m_omega", 0.001),
             ("set_resolve", True),
             ("m_niter", 1),
             ("parallel", False),
@@ -40,13 +44,28 @@ class CoMixup(AugmentBase):
             arg_key, default_v = da
             setattr(args, arg_key, self.config.get(arg_key, default_v))
 
+
         self.args = args
         print("CoMixup Args:", self.args)
-        self.mpp = None
+        # self.mpp = None
+        if args.parallel:
+            batch_size = self.config.get('batch_size')
+            if batch_size is None:
+                raise RuntimeError("Please provide batch_size explicitly in CoMixup's config when using the parallel mode.")
+            args.batch_size = batch_size
+            print("CoMixup use parallel mode.")
+            self.mpp = MixupProcessParallel(args.m_part, args.batch_size, 1)
+        else:
+            self.mpp = None
 
     def setup_based_on_model(self, setup_args: dict):
-        self.saliency_model = setup_args.get('training_model')
+        training_model = setup_args.get('training_model')
         self.optimizer = setup_args.get('training_optimizer')
+        # Use uncompiled backbone for saliency to avoid CUDAGraph conflicts
+        inner = getattr(training_model, 'model', training_model)
+        eager = getattr(inner, '_orig_mod', inner)
+        # Wrap in a simple module that mimics LightningModule interface (forward, .device)
+        self.saliency_model = _EagerModelWrapper(eager, training_model)
 
     def __call__(self, _x, _y) -> AugResult:
         # if y is one hot
@@ -66,7 +85,8 @@ class CoMixup(AugmentBase):
         )
 
     def co_mixup(self, input, target, model, optimizer, criterion_batch, args, mpp=None):
-        criterion_batch = criterion_batch.to(model.device)
+        device = input.device
+        criterion_batch = criterion_batch.to(device)
         sc = None
 
         input_var = Variable(input, requires_grad=True)
@@ -74,8 +94,18 @@ class CoMixup(AugmentBase):
         A_dist = None
 
         # Calculate saliency (unary)
-        # Disable torch.compile to avoid CUDAGraph buffer conflicts during backward
-        sc = _compute_saliency(input_var, target_var, model, criterion_batch, args)
+        if args.clean_lam == 0:
+            model.eval()
+            output = model(input_var)
+            loss_batch = criterion_batch(output, target_var)
+        else:
+            model.train()
+            output = model(input_var)
+            loss_batch = 2 * args.clean_lam * criterion_batch(output,
+                                                              target_var) / args.num_classes
+        loss_batch_mean = torch.mean(loss_batch, dim=0)
+        loss_batch_mean.backward()
+        sc = torch.sqrt(torch.mean(input_var.grad**2, dim=1))
 
         batch_size = input.shape[0]
 
@@ -85,7 +115,7 @@ class CoMixup(AugmentBase):
             z = F.avg_pool2d(sc, kernel_size=8, stride=1)
             z_reshape = z.reshape(batch_size, -1)
             z_idx_1d = torch.argmax(z_reshape, dim=1)
-            z_idx_2d = torch.zeros((batch_size, 2), device=z.device)
+            z_idx_2d = torch.zeros((batch_size, 2), device=device)
             z_idx_2d[:, 0] = z_idx_1d // z.shape[-1]
             z_idx_2d[:, 1] = z_idx_1d % z.shape[-1]
             A_dist = distance(z_idx_2d, dist_type='l1')
@@ -95,22 +125,20 @@ class CoMixup(AugmentBase):
             optimizer.zero_grad()
 
         # Perform mixup and calculate loss
-        target_reweighted = to_one_hot(target, args.num_classes, model.device)
+        target_reweighted = to_one_hot(target, args.num_classes, device)
         if args.parallel:
-            raise RuntimeError("CoMixup parallel mode not available.")
-            # device = input.device
-            # out, target_reweighted = mpp(input.cpu(),
-            #                              target_reweighted.cpu(),
-            #                              args=args,
-            #                              sc=sc.cpu(),
-            #                              A_dist=A_dist.cpu())
-            # out = out.to(device)
-            # target_reweighted = target_reweighted.to(device)
+            out, target_reweighted = mpp(input.cpu(),
+                                         target_reweighted.cpu(),
+                                         args=args,
+                                         sc=sc.cpu(),
+                                         A_dist=A_dist.cpu())
+            out = out.to(device)
+            target_reweighted = target_reweighted.to(device)
 
         else:
             out, target_reweighted = mixup_process(input,
                                                    target_reweighted,
-                                                   model.device,
+                                                   device,
                                                    args=args,
                                                    sc=sc,
                                                    A_dist=A_dist)
@@ -118,22 +146,28 @@ class CoMixup(AugmentBase):
         return out, target_reweighted
 
 
-@torch.compiler.disable
-def _compute_saliency(input_var, target_var, model, criterion_batch, args):
-    if args.clean_lam == 0:
-        model.eval()
-        output = model(input_var)
-        loss_batch = criterion_batch(output, target_var)
-    else:
-        model.train()
-        output = model(input_var)
-        loss_batch = 2 * args.clean_lam * criterion_batch(output, target_var) / args.num_classes
-    loss_batch_mean = torch.mean(loss_batch, dim=0)
-    loss_batch_mean.backward(retain_graph=True)
-    return torch.sqrt(torch.mean(input_var.grad**2, dim=1))
+class _EagerModelWrapper:
+    """Thin wrapper around an uncompiled model that exposes .device, .eval(), .train(), and __call__."""
+
+    def __init__(self, eager_model, lightning_module):
+        self._model = eager_model
+        self._lm = lightning_module
+
+    @property
+    def device(self):
+        return self._lm.device
+
+    def __call__(self, x):
+        return self._model(x)
+
+    def eval(self):
+        self._model.eval()
+
+    def train(self):
+        self._model.train()
 
 
-def to_one_hot(inp, num_classes, device='cuda'):
+def to_one_hot(inp, num_classes, device=None):
     y_onehot = torch.zeros((inp.size(0), num_classes),
                            dtype=torch.float32, device=device)
     y_onehot.scatter_(1, inp.unsqueeze(1), 1)
@@ -165,7 +199,7 @@ def random_initialize(n_input, n_output, height, width):
     return np.random.randint(0, n_input, (n_output, width, height))
 
 
-def to_onehot(idx, n_input, device='cuda'):
+def to_onehot(idx, n_input, device=None):
     '''Return one-hot vector'''
     idx_onehot = torch.zeros(
         (idx.shape[0], n_input), dtype=torch.float32, device=device)
@@ -276,7 +310,7 @@ def graphcut_wrapper(cost_penalty, label_count, n_input, height, width, beta, de
     return mask_onehot_i
 
 
-def resolve_label(assigned_label_total, device='cuda'):
+def resolve_label(assigned_label_total, device=None):
     '''A post-processing for resolving identical outputs'''
     n_output, n_input = assigned_label_total.shape
     add_cost = torch.zeros_like(assigned_label_total)
@@ -310,7 +344,7 @@ def get_onehot_matrix(cost_matrix,
                       thres_type='hard',
                       set_resolve=True,
                       niter=3,
-                      device='cuda'):
+                      device=None):
     '''Iterative submodular minimization algorithm with the modularization of supermodular term'''
     n_input, height, width = cost_matrix.shape
     thres = thres * height * width
@@ -467,3 +501,222 @@ def mixup_process(out, target_reweighted, device, args=None, sc=None, A_dist=Non
         target_reweighted = torch.cat(target_list, dim=0)
 
     return out.contiguous(), target_reweighted
+
+
+def mixup_process_worker(out: torch.Tensor,
+                         target_reweighted: torch.Tensor,
+                         hidden=0,
+                         args=None,
+                         sc: torch.Tensor = None,
+                         A_dist: torch.Tensor = None,
+                         debug=False):
+    """Perform Co-Mixup"""
+    m_block_num = args.m_block_num
+    n_input = out.shape[0]
+    width = out.shape[-1]
+
+    if m_block_num == -1:
+        m_block_num = 2**np.random.randint(1, 5)
+
+    block_size = width // m_block_num
+
+    with torch.no_grad():
+        if A_dist is None:
+            A_dist = torch.eye(n_input, device=out.device)
+        A_base = torch.eye(n_input, device=out.device)
+
+        sc = F.avg_pool2d(sc, block_size)
+        sc_norm = sc / sc.view(n_input, -1).sum(1).view(n_input, 1, 1)
+        cost_matrix = -sc_norm
+
+        A_dist = A_dist / torch.sum(A_dist) * n_input
+        A = (1 - args.m_omega) * A_base + args.m_omega * A_dist
+
+        # Return a batch(partitioned) of mixup labeling
+        mask_onehot = get_onehot_matrix(cost_matrix.detach(),
+                                        A,
+                                        n_output=n_input,
+                                        beta=args.m_beta,
+                                        gamma=args.m_gamma,
+                                        eta=args.m_eta,
+                                        mixup_alpha=args.mixup_alpha,
+                                        thres=args.m_thres,
+                                        thres_type=args.m_thres_type,
+                                        set_resolve=args.set_resolve,
+                                        niter=args.m_niter,
+                                        device=out.device)
+        # Generate image and corrsponding soft target
+        out, target_reweighted = mix_input(mask_onehot, out, target_reweighted)
+
+    return out.contiguous(), target_reweighted
+
+
+def mixup_process_worker_wrapper(q_input: mp.Queue, q_output: mp.Queue, gpu_id: int):
+    """
+    :param q_input:		input queue
+    :param q_output:	output queue
+    :param gpu_id:		running gpu device id
+    """
+    os.environ["CUDA_VISIBLE_DEVICES"] = f"{gpu_id}"
+    print(f"Process generated with cuda:{gpu_id}")
+    device = torch.device(f"cuda:{gpu_id}")
+    while True:
+        # Get and load on gpu
+        out, target_reweighted, hidden, args, sc, A_dist, debug = q_input.get()
+        out = out.to(device)
+        target_reweighted = target_reweighted.to(device)
+        sc = sc.to(device)
+        A_dist = A_dist.to(device)
+
+        # Run
+        out, target_reweighted = mixup_process_worker(out, target_reweighted, hidden, args, sc,
+                                                      A_dist, debug)
+        # To cpu and return
+        out = out.cpu()
+        target_reweighted = target_reweighted.cpu()
+        q_output.put([out, target_reweighted])
+
+
+class MixupProcessWorker:
+    def __init__(self, device: int):
+        """
+        :param device: gpu device id
+        """
+        ctx = mp.get_context('spawn')
+        self.q_input = ctx.Queue()
+        self.q_output = ctx.Queue()
+        self.worker = ctx.Process(target=mixup_process_worker_wrapper,
+                                  args=[self.q_input, self.q_output, device])
+        self.worker.deamon = True
+        self.worker.start()
+
+    def start(self,
+              out: torch.Tensor,
+              target_reweighted: torch.Tensor,
+              hidden=0,
+              args=None,
+              sc: torch.Tensor = None,
+              A_dist: torch.Tensor = None,
+              debug=True):
+        self.q_input.put(
+            [out, target_reweighted, hidden, args, sc, A_dist, debug])
+
+    def join(self):
+        input, target = self.q_output.get()
+        return input, target
+
+    def close(self):
+        self.worker.terminate()
+
+
+class MixupProcessParallel:
+    def __init__(self, part, batch_size, num_gpu=1):
+        """
+        :param part:
+        :param batch_size:
+        :param num_gpu:
+        """
+        self.part = part
+        self.batch_size = batch_size
+        self.n_workers = ceil(batch_size / part)
+        self.workers = [MixupProcessWorker(
+            device=i % num_gpu) for i in range(self.n_workers)]
+
+    def __call__(self,
+                 out: torch.Tensor,
+                 target_reweighted: torch.Tensor,
+                 hidden=0,
+                 args=None,
+                 sc: torch.Tensor = None,
+                 A_dist: torch.Tensor = None,
+                 debug=False):
+        '''
+        :param out:					cpu tensor
+        :param target_reweighted: 	cpu tensor
+        :param hidden:
+        :param args:				cpu args
+        :param sc: 					cpu tensor
+        :param A_dist: 				cpu tensor
+        :param debug:
+        :return:					out, target_reweighted (cpu tensor)
+        '''
+
+        for idx in range(self.n_workers):
+            self.workers[idx].start(
+                out[idx * self.part:(idx + 1) * self.part].contiguous(),
+                target_reweighted[idx * self.part:(idx + 1)
+                                  * self.part].contiguous(), hidden, args,
+                sc[idx * self.part:(idx + 1) * self.part].contiguous(),
+                A_dist[idx * self.part:(idx + 1) * self.part,
+                       idx * self.part:(idx + 1) * self.part].contiguous(), debug)
+        # join
+        out_list = []
+        target_list = []
+        for idx in range(self.n_workers):
+            out, target = self.workers[idx].join()
+            out_list.append(out)
+            target_list.append(target)
+
+        return torch.cat(out_list), torch.cat(target_list)
+
+    def close(self):
+        for w in self.workers:
+            w.close()
+
+
+if __name__ == "__main__":
+    '''unit test'''
+    mp.set_start_method("spawn")
+
+    # inputs (cpu) : out0, target_reweighted0, out, target_reweighted, args, sc, A_dist
+    d = torch.load("input.pt")
+    out0 = d["out0"]
+    target_reweighted0 = d["target_reweighted0"]
+    args = d["args"]
+    sc = d["sc"]
+    A_dist = d["A_dist"]
+
+    # Parallel mixup wrapper
+    mpp = MixupProcessParallel(args.m_part, args.batch_size, num_gpu=1)
+
+    # For cuda initialize
+    torch.ones(3).cuda()
+    for iter in tqdm(range(1), desc="initialize"):
+        out, target_reweighted = mpp(out0,
+                                     target_reweighted0,
+                                     args=args,
+                                     sc=sc,
+                                     A_dist=A_dist,
+                                     debug=True)
+
+    # Parallel run
+    for iter in tqdm(range(100), desc="parallel"):
+        out, target_reweighted = mpp(out0,
+                                     target_reweighted0,
+                                     args=args,
+                                     sc=sc,
+                                     A_dist=A_dist,
+                                     debug=True)
+
+    print((d["out"].cpu() == out.cpu()).float().mean())
+    print((d["target_reweighted"].cpu() ==
+          target_reweighted.cpu()).float().mean())
+
+    # Original run
+    out0cuda = out0.cuda()
+    target_reweighted0cuda = target_reweighted0.cuda()
+    sccuda = sc.cuda()
+    A_distcuda = A_dist.cuda()
+    for iter in tqdm(range(100), desc="original"):
+        out, target_reweighted = mixup_process(out0cuda,
+                                               target_reweighted0cuda,
+                                               args=args,
+                                               sc=sccuda,
+                                               A_dist=A_distcuda,
+                                               debug=True)
+
+    print((d["out"].cpu() == out.cpu()).float().mean())
+    print((d["target_reweighted"].cpu() ==
+          target_reweighted.cpu()).float().mean())
+
+    print("end")
