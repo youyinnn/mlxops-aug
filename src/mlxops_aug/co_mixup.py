@@ -70,7 +70,7 @@ class CoMixup(AugmentBase):
     def __call__(self, _x, _y) -> AugResult:
         # if y is one hot
         if torch.rand(1) <= self.config.get("prob", 1.0):
-            x, y = self.co_mixup(
+            _x, _y = self.co_mixup(
                 _x,
                 _y,
                 self.saliency_model,
@@ -80,8 +80,8 @@ class CoMixup(AugmentBase):
                 mpp=self.mpp
             )
         return AugResult(
-            augmented_x=x,
-            augmented_y=y
+            augmented_x=_x,
+            augmented_y=_y
         )
 
     def co_mixup(self, input, target, model, optimizer, criterion_batch, args, mpp=None):
