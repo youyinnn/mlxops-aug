@@ -34,17 +34,20 @@ class GuidedMixup(AugmentBase):
             setattr(args, arg_key, self.config.get(arg_key, default_v))
 
         self.args = args
+        
+    def setup_based_on_model(self, setup_args: dict):
+        self.saliency_model = setup_args.get('training_model')
 
-    def aug(self, _x, _y, model):
+    def aug(self, _x, _y):
         # y is not
-        sa = gradient.vanilla_gradient(model, _x, _y.argmax(1))
+        sa = gradient.vanilla_gradient(self.saliency_model, _x, _y.argmax(1))
         return mixup_process(_x, _y, grad=sa, args=self.args)
 
-    def __call__(self, _x, _y, model) -> AugResult:
+    def __call__(self, _x, _y) -> AugResult:
         if torch.rand(1) <= self.config.get("prob", 1.0):
             _y_oh = torch.nn.functional.one_hot(
                 _y, num_classes=self.num_classes)
-            _x, _y = self.aug(_x, _y_oh, model)
+            _x, _y = self.aug(_x, _y_oh)
 
         return AugResult(
             augmented_x=_x,
