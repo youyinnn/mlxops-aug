@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mlxops-aug"
-version = "0.1.9"
+version = "0.2.0"
 description = "Data augmentation methods for deep learning (CutMix, MixUp, PuzzleMix)"
 readme = "README.md"
 license = { file = "LICENSE" }
